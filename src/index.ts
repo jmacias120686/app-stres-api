@@ -86,8 +86,8 @@ const newMetric = await prisma.dailyMetric.create({
 });
     // 2. LLAMADA A LA API DE PYTHON (MACHINE LEARNING)
     // Le enviamos los datos recién recibidos al modelo Random Forest
-    const pythonApiUrl = 'http://127.0.0.1:5000/predict';
     //const pythonApiUrl = 'http://127.0.0.1:5000/predict';
+    const pythonApiUrl = 'https://app-stres-ml-production.up.railway.app/predict';
 
     const mlResponse = await axios.post(pythonApiUrl, {
       heartRateAvg,
