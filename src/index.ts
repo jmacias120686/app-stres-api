@@ -18,7 +18,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3000
 
 // ==========================================
 // ENDPOINT: Obtener Dashboard del Usuario
@@ -87,7 +87,8 @@ const newMetric = await prisma.dailyMetric.create({
     // 2. LLAMADA A LA API DE PYTHON (MACHINE LEARNING)
     // Le enviamos los datos recién recibidos al modelo Random Forest
     const pythonApiUrl = 'http://127.0.0.1:5000/predict';
-    
+    //const pythonApiUrl = 'http://127.0.0.1:5000/predict';
+
     const mlResponse = await axios.post(pythonApiUrl, {
       heartRateAvg,
       sleepHours,
@@ -203,6 +204,6 @@ app.get("/api/users/:id/last-metrics", async (req, res) => {
 });
 
 
-app.listen(PORT, () => {
-  console.log(`🚀 Servidor Node.js corriendo en http://localhost:${PORT}`);
-});
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Servidor Node corriendo en puerto ${PORT}`)
+})
