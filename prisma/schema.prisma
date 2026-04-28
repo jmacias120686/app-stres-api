@@ -1,0 +1,72 @@
+// ./prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id                String             @id @default(uuid())
+  email             String             @unique
+  name              String
+  career            String
+  semester          Int
+  createdAt         DateTime           @default(now())
+  
+  // Relaciones
+  metrics           DailyMetric[]
+  academicLoads     AcademicLoad[]
+  stressHistory     StressPrediction[]
+}
+
+model DailyMetric {
+  id                String   @id @default(uuid())
+  userId            String
+  date              DateTime @default(now())
+  
+  // Datos Fisiológicos (Sensores)
+  heartRateAvg      Float    // Frecuencia cardíaca promedio
+  sleepHours        Float    // Horas de sueño
+  steps             Int      // Actividad física
+  
+  // Datos Conductuales
+  screenTimeMinutes Int      // Tiempo de uso del móvil
+  socialMediaMin    Int      // Tiempo en apps sociales
+  
+  // Datos de Autoinforme (Cuestionarios)
+  moodScore         Int      // 1-10 (Cómo se siente)
+  perceivedStress   Int      // 1-10 (Nivel subjetivo)
+
+  user              User     @relation(fields: [userId], references: [id])
+}
+
+model AcademicLoad {
+  id             String   @id @default(uuid())
+  userId         String
+  subject        String
+  examsPending   Int      // Número de exámenes en la semana
+  assignmentsDue Int      // Tareas pendientes
+  difficulty     Int      // 1-5
+  
+  user           User     @relation(fields: [userId], references: [id])
+}
+
+model StressPrediction {
+  id            String   @id @default(uuid())
+  userId        String
+  probability   Float    // Probabilidad de estrés (del modelo ML)
+  level         StressLevel
+  triggerFactor String?  // Factor principal detectado (ej: "Falta de sueño")
+  createdAt     DateTime @default(now())
+  
+  user          User     @relation(fields: [userId], references: [id])
+}
+
+enum StressLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
