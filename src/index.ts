@@ -20,46 +20,43 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-// URL del modelo ML desplegado en Railway
-const PYTHON_API_URL =
-  process.env.PYTHON_API_URL || "https://app-stres-ml-production.up.railway.app/predict";
+// URL BASE del servicio Python
+const PYTHON_API_BASE_URL =
+  process.env.PYTHON_API_BASE_URL || "https://app-stres-ml-production.up.railway.app";
 
 // ==========================================
 // ENDPOINT: Obtener Dashboard del Usuario
 // ==========================================
-app.get(
-  "/api/users/:id/dashboard",
-  async (req: Request<{ id: string }>, res: Response) => {
-    const { id } = req.params;
+app.get("/api/users/:id/dashboard", async (req: Request<{ id: string }>, res: Response) => {
+  const { id } = req.params;
 
-    try {
-      const user = await prisma.user.findUnique({
-        where: { id },
-        include: {
-          stressHistory: {
-            orderBy: { createdAt: "desc" },
-            take: 7,
-          },
-          metrics: {
-            orderBy: { date: "desc" },
-            take: 1,
-          },
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id },
+      include: {
+        stressHistory: {
+          orderBy: { createdAt: "desc" },
+          take: 7,
         },
-      });
+        metrics: {
+          orderBy: { date: "desc" },
+          take: 1,
+        },
+      },
+    });
 
-      if (!user) {
-        return res.status(404).json({ error: "Usuario no encontrado" });
-      }
-
-      return res.json(user);
-    } catch (error) {
-      console.error("Error en /api/users/:id/dashboard:", error);
-      return res.status(500).json({
-        error: "Error al obtener datos del servidor",
-      });
+    if (!user) {
+      return res.status(404).json({ error: "Usuario no encontrado" });
     }
+
+    return res.json(user);
+  } catch (error) {
+    console.error("Error en /api/users/:id/dashboard:", error);
+    return res.status(500).json({
+      error: "Error al obtener datos del servidor",
+    });
   }
-);
+});
 
 // ==========================================
 // ENDPOINT: Recibir métricas y predecir estrés
@@ -83,7 +80,6 @@ app.post("/api/metrics", async (req: Request, res: Response) => {
       });
     }
 
-    // Convertimos a números por seguridad
     const metricData = {
       heartRateAvg: Number(heartRateAvg) || 0,
       sleepHours: Number(sleepHours) || 0,
@@ -94,7 +90,6 @@ app.post("/api/metrics", async (req: Request, res: Response) => {
       perceivedStress: Number(perceivedStress) || 0,
     };
 
-    // 1. Guardamos las métricas crudas en la base de datos
     const newMetric = await prisma.dailyMetric.create({
       data: {
         user: { connect: { id: userId } },
@@ -102,15 +97,17 @@ app.post("/api/metrics", async (req: Request, res: Response) => {
       },
     });
 
-    // 2. LLAMADA A LA API DE PYTHON
-    const mlResponse = await axios.post(PYTHON_API_URL, metricData, {
-      headers: {
-        "Content-Type": "application/json",
-      },
-      timeout: 15000,
-    });
+    const mlResponse = await axios.post(
+      `${PYTHON_API_BASE_URL}/predict`,
+      metricData,
+      {
+        headers: {
+          "Content-Type": "application/json",
+        },
+        timeout: 15000,
+      }
+    );
 
-    // 3. Extraemos la respuesta del modelo
     const { level, probability, triggerFactor } = mlResponse.data;
 
     if (!level || probability === undefined) {
@@ -120,7 +117,6 @@ app.post("/api/metrics", async (req: Request, res: Response) => {
       });
     }
 
-    // 4. Guardamos la predicción en la base de datos
     const newPrediction = await prisma.stressPrediction.create({
       data: {
         userId,
@@ -130,7 +126,6 @@ app.post("/api/metrics", async (req: Request, res: Response) => {
       },
     });
 
-    // 5. Respondemos a la app
     return res.status(201).json({
       message: "Datos procesados con éxito por el modelo de Machine Learning",
       metric: newMetric,
@@ -148,6 +143,46 @@ app.post("/api/metrics", async (req: Request, res: Response) => {
 
     return res.status(500).json({
       error: "Error al procesar las métricas o conectar con el modelo predictivo.",
+      detail: error.message,
+    });
+  }
+});
+
+// ==========================================
+// ENDPOINT: Entrenar modelo desde Node
+// ==========================================
+app.post("/api/model/train", async (_req: Request, res: Response) => {
+  try {
+    const response = await axios.post(
+      `${PYTHON_API_BASE_URL}/train`,
+      {},
+      {
+        headers: {
+          "Content-Type": "application/json",
+        },
+        timeout: 60000,
+      }
+    );
+
+    return res.json({
+      success: true,
+      message: "Entrenamiento ejecutado correctamente",
+      data: response.data,
+    });
+  } catch (error: any) {
+    console.error("Error en /api/model/train:", error);
+
+    if (error.response) {
+      return res.status(500).json({
+        success: false,
+        error: "Python respondió con error al entrenar",
+        detail: error.response.data,
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      error: "No se pudo ejecutar el entrenamiento",
       detail: error.message,
     });
   }
@@ -222,7 +257,7 @@ app.get("/api/users/login/:email", async (req: Request, res: Response) => {
 });
 
 // ==========================================
-// ENDPOINT: Obtener el último registro de métricas del usuario
+// ENDPOINT: Obtener último registro de métricas
 // ==========================================
 app.get("/api/users/:id/last-metrics", async (req: Request, res: Response) => {
   try {
