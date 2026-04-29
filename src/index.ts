@@ -4,7 +4,7 @@ import cors from "cors";
 import { PrismaClient, StressLevel } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
-import axios from "axios"; // <-- Importamos axios para llamar a la API de Python
+import axios from "axios";
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -18,7 +18,11 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const PORT = process.env.PORT || 3000
+const PORT = process.env.PORT || 3000;
+
+// URL del modelo ML desplegado en Railway
+const PYTHON_API_URL =
+  process.env.PYTHON_API_URL || "https://app-stres-ml-production.up.railway.app/predict";
 
 // ==========================================
 // ENDPOINT: Obtener Dashboard del Usuario
@@ -49,8 +53,10 @@ app.get(
 
       return res.json(user);
     } catch (error) {
-      console.error(error);
-      return res.status(500).json({ error: "Error al obtener datos del servidor" });
+      console.error("Error en /api/users/:id/dashboard:", error);
+      return res.status(500).json({
+        error: "Error al obtener datos del servidor",
+      });
     }
   }
 );
@@ -71,86 +77,103 @@ app.post("/api/metrics", async (req: Request, res: Response) => {
   } = req.body;
 
   try {
+    if (!userId) {
+      return res.status(400).json({
+        error: "El campo userId es obligatorio.",
+      });
+    }
+
+    // Convertimos a números por seguridad
+    const metricData = {
+      heartRateAvg: Number(heartRateAvg) || 0,
+      sleepHours: Number(sleepHours) || 0,
+      steps: Number(steps) || 0,
+      screenTimeMinutes: Number(screenTimeMinutes) || 0,
+      socialMediaMin: Number(socialMediaMin) || 0,
+      moodScore: Number(moodScore) || 0,
+      perceivedStress: Number(perceivedStress) || 0,
+    };
+
     // 1. Guardamos las métricas crudas en la base de datos
-const newMetric = await prisma.dailyMetric.create({
-  data: {
-    user: { connect: { id: userId } },
-    heartRateAvg: heartRateAvg || 0,
-    sleepHours: sleepHours || 0,
-    steps: steps || 0,
-    screenTimeMinutes: screenTimeMinutes || 0, // <-- Si viene vacío, pone 0
-    socialMediaMin: socialMediaMin || 0,       // <-- Si viene vacío, pone 0
-    moodScore: moodScore || 0,                 // <-- Si viene vacío, pone 0
-    perceivedStress: perceivedStress || 0,     // <-- Si viene vacío, pone 0
-  }
-});
-    // 2. LLAMADA A LA API DE PYTHON (MACHINE LEARNING)
-    // Le enviamos los datos recién recibidos al modelo Random Forest
-    //const pythonApiUrl = 'http://127.0.0.1:5000/predict';
-    const pythonApiUrl = 'https://app-stres-ml-production.up.railway.app/predict';
-
-    const mlResponse = await axios.post(pythonApiUrl, {
-      heartRateAvg,
-      sleepHours,
-      steps,
-      screenTimeMinutes,
-      socialMediaMin,
-      moodScore,
-      perceivedStress
-    });
-
-    // 3. Extraemos la respuesta que nos dio Python
-    const { level, probability, triggerFactor } = mlResponse.data;
-
-    // 4. Guardamos la predicción real en la base de datos
-    const newPrediction = await prisma.stressPrediction.create({
+    const newMetric = await prisma.dailyMetric.create({
       data: {
-        userId,
-        level: level as StressLevel, // Aseguramos que coincide con el ENUM de Prisma (LOW, MEDIUM, HIGH)
-        probability,
-        triggerFactor,
+        user: { connect: { id: userId } },
+        ...metricData,
       },
     });
 
-    // 5. Devolvemos el resultado a la aplicación móvil
+    // 2. LLAMADA A LA API DE PYTHON
+    const mlResponse = await axios.post(PYTHON_API_URL, metricData, {
+      headers: {
+        "Content-Type": "application/json",
+      },
+      timeout: 15000,
+    });
+
+    // 3. Extraemos la respuesta del modelo
+    const { level, probability, triggerFactor } = mlResponse.data;
+
+    if (!level || probability === undefined) {
+      return res.status(500).json({
+        error: "La API del modelo devolvió una respuesta incompleta.",
+        mlResponse: mlResponse.data,
+      });
+    }
+
+    // 4. Guardamos la predicción en la base de datos
+    const newPrediction = await prisma.stressPrediction.create({
+      data: {
+        userId,
+        level: String(level).toUpperCase() as StressLevel,
+        probability: Number(probability),
+        triggerFactor: triggerFactor || "No especificado",
+      },
+    });
+
+    // 5. Respondemos a la app
     return res.status(201).json({
       message: "Datos procesados con éxito por el modelo de Machine Learning",
       metric: newMetric,
       prediction: newPrediction,
     });
-    
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error en el endpoint /api/metrics:", error);
-    return res.status(500).json({ 
-      error: "Error al procesar las métricas o conectar con el modelo predictivo." 
+
+    if (error.response) {
+      return res.status(500).json({
+        error: "Error al conectar con el modelo predictivo.",
+        detail: error.response.data,
+      });
+    }
+
+    return res.status(500).json({
+      error: "Error al procesar las métricas o conectar con el modelo predictivo.",
+      detail: error.message,
     });
   }
 });
-
-
 
 // ==========================================
 // ENDPOINT: Obtener todos los usuarios
 // ==========================================
-app.get("/api/users", async (req: Request, res: Response) => {
+app.get("/api/users", async (_req: Request, res: Response) => {
   try {
     const users = await prisma.user.findMany({
-      select: { id: true, name: true, email: true } // Solo traemos datos básicos
+      select: { id: true, name: true, email: true },
     });
+
     return res.json(users);
   } catch (error) {
-    console.error(error);
+    console.error("Error en /api/users:", error);
     return res.status(500).json({ error: "Error al obtener usuarios" });
   }
 });
 
-
 // ==========================================
-// ENDPOINT: Crear un nuevo usuario (Estudiante)
+// ENDPOINT: Crear un nuevo usuario
 // ==========================================
 app.post("/api/users", async (req: Request, res: Response) => {
-  // 1. Recibimos también el semester
-  const { name, email, career, semester } = req.body; 
+  const { name, email, career, semester } = req.body;
 
   try {
     const newUser = await prisma.user.create({
@@ -158,52 +181,63 @@ app.post("/api/users", async (req: Request, res: Response) => {
         name,
         email,
         career,
-        semester: parseInt(semester), // 2. Lo convertimos a número entero para la base de datos
+        semester: parseInt(semester, 10),
       },
     });
+
     return res.status(201).json(newUser);
-    
   } catch (error: any) {
-    console.error("🔍 ERROR DETALLADO AL CREAR USUARIO:", error);
-    
-    if (error.code === 'P2002') {
-      return res.status(400).json({ error: "Este correo electrónico ya está registrado." });
+    console.error("ERROR DETALLADO AL CREAR USUARIO:", error);
+
+    if (error.code === "P2002") {
+      return res.status(400).json({
+        error: "Este correo electrónico ya está registrado.",
+      });
     }
 
-    return res.status(500).json({ error: "Error interno al crear el estudiante." });
+    return res.status(500).json({
+      error: "Error interno al crear el estudiante.",
+    });
   }
 });
 
-
-
-
-// 1. Endpoint de Login por Email
-app.get("/api/users/login/:email", async (req, res) => {
+// ==========================================
+// ENDPOINT: Login por Email
+// ==========================================
+app.get("/api/users/login/:email", async (req: Request, res: Response) => {
   try {
     const user = await prisma.user.findUnique({
-      where: { email: req.params.email }
+      where: { email: req.params.email },
     });
-    if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
-    res.json(user);
+
+    if (!user) {
+      return res.status(404).json({ error: "Usuario no encontrado" });
+    }
+
+    return res.json(user);
   } catch (error) {
-    res.status(500).json({ error: "Error en el servidor" });
+    console.error("Error en /api/users/login/:email:", error);
+    return res.status(500).json({ error: "Error en el servidor" });
   }
 });
 
-// 2. Obtener el último registro de métricas del usuario
-app.get("/api/users/:id/last-metrics", async (req, res) => {
+// ==========================================
+// ENDPOINT: Obtener el último registro de métricas del usuario
+// ==========================================
+app.get("/api/users/:id/last-metrics", async (req: Request, res: Response) => {
   try {
-    const lastMetric = await prisma.metric.findFirst({
+    const lastMetric = await prisma.dailyMetric.findFirst({
       where: { userId: req.params.id },
-      orderBy: { createdAt: 'desc' }
+      orderBy: { createdAt: "desc" },
     });
-    res.json(lastMetric || {});
+
+    return res.json(lastMetric || {});
   } catch (error) {
-    res.status(500).json({ error: "Error al obtener métricas" });
+    console.error("Error en /api/users/:id/last-metrics:", error);
+    return res.status(500).json({ error: "Error al obtener métricas" });
   }
 });
-
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Servidor Node corriendo en puerto ${PORT}`)
-})
+  console.log(`Servidor Node corriendo en puerto ${PORT}`);
+});
